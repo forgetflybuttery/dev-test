@@ -1,118 +1,95 @@
-请重构当前 `common/create-pipeline-context/src/main.ts`，目标是提高可测试性，并为后续 Jest 单体测试做准备。
+请继续重构当前 common/create-pipeline-context/src/main.ts。
 
-当前问题：
-- `run()` 从读取 GitHub Actions input、读取/merge config、生成 pipeline context、计算 CI/CD flags、validation、output 全部集中在一个很大的 method 中。
-- 目前 `run()` 过长，单体测试 scope 不清晰。
-- 希望保持现有业务逻辑、输出结果、错误处理行为完全不变，仅进行结构性 refactoring。
+目的：
+为了后续使用 Jest 对 create-pipeline-context 的内部处理进行单体测试，
+进一步减少 run() 中直接实现的业务逻辑，将 Context 生成相关处理 method 化。
 
-请按以下原则修改：
+当前已经拆分出的函数（例如 createCiBuildFlags、createCiIntegrationFlags、
+createCiTestFlags、createCdDeployFlags、validateContext、outputContext、
+outputTestParallelKeys）请尽量保持现有实现和行为不变。
 
-1. 保留 `run()` 作为 GitHub Actions 的入口方法，但让 `run()` 只负责 orchestration，不再包含大量业务逻辑。
-2. 将 `run()` 内部处理按职责拆成独立、可测试的 functions。
-3. 优先拆分以下部分：
-   - GitHub Actions inputs 读取
-   - target config path 决定逻辑
-   - base config load / config files merge
-   - repository / APP_REPO / MANIFEST_REPO 设置
-   - environment（prod / nprd）相关 context 设置
-   - container / Cloud Run / Cloud Run Job / Cloud Run Function 相关设置
-   - CI build flag 生成
-   - CI integration flag 生成
-   - CI test flag 生成
-   - CD deploy flag 生成
-   - validation
-   - pipeline context / GITHUB_ENV / GITHUB_OUTPUT / Job Summary 输出
-4. 已经存在的简单 utility functions，例如：
-   - `convertFlatConfig`
-   - `convertEnvConfig`
-   - `replaceEnv`
-   - `nvl`
-   - `existsFile`
-   不要无意义地继续拆分。
-5. 对有业务判断逻辑的 function 使用 `export`，以便 Jest 可以直接 import 并进行 unit test。
-6. 不要把所有 function 强制设计成 JSON string 输入 / JSON string 输出。
-   - production code 应继续使用合适的 TypeScript object / Config 类型。
-   - JSON 仅作为 Jest test fixture 的保存形式。
-7. 尽量把纯业务逻辑和以下 I/O 分离：
-   - `core.getInput`
-   - `core.setOutput`
-   - `core.exportVariable`
-   - `fs.readFileSync`
-   - `fs.writeFileSync`
-   - `glob`
-   - `execSync`
-8. 如果某段逻辑依赖外部 I/O，请尽量通过参数传入必要数据，使核心判断逻辑可以直接 unit test。
-9. 不要改变任何现有 flag 名称、config key、默认值、条件判断、branch name 生成规则、deploy target 判断规则。
-10. 不要改变现有 GitHub Actions 对外接口。
-11. 不要删除现有 validation 和 error message。
-12. 重构后现有行为必须与重构前一致。
+请重点重构目前仍然直接写在 run() 中的 Context 生成处理。
 
-期望的整体结构类似：
+要求：
 
-async function run(): Promise<void> {
-  try {
-    const inputs = getActionInputs();
+1. 将 run() 中以下类型的处理按照职责拆分为独立 method：
+   - GitHub Actions inputs 的读取
+   - targetConfigPath 的判断和基础 config 的读取
+   - REPO_TYPE 对应的 WORK_REPO / APP_REPO / MANIFEST_REPO 设置
+   - input 参数向 config.sys 的设置
+   - config_files 的读取、glob、YAML load、deep merge
+   - production / non-production 环境相关参数的设置
+   - container 的默认值及 image path 设置
+   - Cloud Run Service / Cloud Run Job / Cloud Run Function 的 Context 设置
+   - PRODUCT / MICROSERVICE / SERVICE 等 Context 设置
+   - MODE=test 时的 override
+   - TEST_PARALLEL_KEYS 的生成/读取处理
 
-    let config = loadBaseConfig(inputs);
-    config = await mergeConfigFiles(config, inputs);
+2. 不要为了拆分而过度细分。
+   请按照“一个明确职责 = 一个 method”的原则进行拆分。
 
-    config = applyRepositoryConfig(config, inputs);
-    config = applyEnvironmentConfig(config, inputs);
-    config = applyDeployTargetConfig(config, inputs);
+3. run() 最终主要只负责整体流程控制（orchestration），
+   尽量形成类似下面的结构：
 
-    config = createCiBuildFlags(config, inputs);
-    config = createCiIntegrationFlags(config, inputs);
-    config = createCiTestFlags(config, inputs);
-    config = createCdDeployFlags(config, inputs);
+   getInputs()
+       ↓
+   loadConfig()
+       ↓
+   createPipelineContext()
+       ↓
+   createCiBuildFlags()
+   createCiIntegrationFlags()
+   createCiTestFlags()
+   createCdDeployFlags()
+       ↓
+   validateContext()
+       ↓
+   outputContext()
+   outputTestParallelKeys()
 
-    validateContext(config, inputs);
+4. 拆出的业务逻辑 method 应尽量设计成容易进行 Jest 单体测试的形式。
 
-    await outputContext(config, inputs);
-  } catch (error) {
-    if (error instanceof Error) {
-      core.setFailed(error.message);
-    }
-  }
-}
+5. 对于 Context 生成/转换类 method：
+   - 尽量通过参数接收 input/config
+   - 尽量通过 return 返回处理后的结果
+   - 避免在 method 内直接调用 core.getInput()
+   - 避免不必要地依赖全局状态
 
-函数名可以根据现有代码内容调整，不要求完全使用以上名称，但必须做到：
-- 一个 function 一个明确职责
-- test scope 容易理解
-- 可以单独 import 到 Jest test
-- run() 本身保持简洁
+   例如优先考虑：
+   function applyEnvironmentConfig(config: Config, inputs: Inputs): Config
 
-特别优先将当前这些注释块提取为独立 function：
-- `// flag設定 ci-build`
-- `// flag設定 ci-integration`
-- `// flag設定 ci-test`
-- `// flag設定 cd-deploy`
-- `// バリデーションチェック`
-- `// Output context`
+   而不是：
+   function applyEnvironmentConfig(): void
 
-重构完成后，请继续做以下事情：
+6. 不要求所有 method 的输入输出都转换成 JSON 字符串。
+   TypeScript object / Config / Input object 可以直接作为参数和返回值。
+   重点是 method 的输入和输出边界明确、容易进行单体测试。
 
-A. 列出你新增/拆分出来的 functions，并说明每个 function 的职责。
-B. 指出哪些 functions 最适合做 Jest unit test。
-C. 为以下 functions 各生成至少 2～3 个 Jest 测试示例：
-   - CI build flag calculation
-   - CI integration flag calculation
-   - CI test flag calculation
-   - CD deploy flag calculation
-D. 测试中复杂的 input / expected result 可以使用 JSON fixture，例如：
-   `test/fixtures/<case-name>/input.json`
-   `test/fixtures/<case-name>/expected.json`
-E. Jest 的比较方式优先使用：
-   `expect(actual).toEqual(expected)`
-F. 对简单函数不要为了使用 JSON 而额外复杂化测试。
-G. 在修改前先分析现有 `run()` 的逻辑区块，再进行 refactoring，避免遗漏任何处理。
-H. 如果发现某个逻辑拆分后可能改变执行顺序或副作用，请优先保持原顺序，不要擅自优化业务逻辑。
+7. GitHub Actions 特有的 I/O 操作，例如：
+   - core.getInput()
+   - core.setOutput()
+   - core.exportVariable()
+   - core.summary
+   - fs.writeFileSync()
+   尽量保留在 run() 或专门的 I/O method 中，
+   不要混入纯粹的 Context 生成业务逻辑。
 
-请先完成 refactoring，再生成对应的 Jest test skeleton。
-请优先做最小范围、低风险的重构。第一阶段先提取 ci-build、ci-integration、ci-test、cd-deploy、validation、output 这几个明显区块，不要一次性重写整个文件。
-错误处理也请按职责进行整理：
+8. run() 最外层的 try/catch 和 core.setFailed() 错误处理暂时保留，
+   不需要为了 method 化而单独拆成 error handler。
 
-- `run()` 最外层的 try/catch 和 `core.setFailed(error.message)` 作为 GitHub Actions 入口层的统一异常处理，保留在 run() 中，不需要单独提取。
-- 当前业务规则导致的错误判断（例如 blue-green / rollback、CloudRun Function、macaron2 等）属于 validation，请从 run() 中提取到 `validateContext()`。
-- 第一阶段重构时不要改变现有 error message、core.setFailed() 的调用条件和执行行为。
-- 文件读取、execSync、JSON.parse 等局部异常处理，如果属于特定处理本身，则保留在对应拆分后的 function 内，不要为了拆分而拆分。
+9. 必须保持现有功能、判断条件、默认值、错误信息和输出结果完全一致。
+   本次只做 refactoring，不改变业务逻辑。
 
+10. 不要删除现有已经拆分完成的 method。
+    如果需要调整参数或返回值以提高 testability，可以进行最小限度修改。
+
+11. 对需要直接进行 Jest 单体测试的 method，请考虑 export，
+    但不要无意义地 export 所有内部 helper。
+
+请先分析当前 run() 中的处理职责，再进行重构。
+重构完成后，请说明：
+- 新增/调整了哪些 method
+- 每个 method 负责什么
+- run() 最终负责什么
+- 哪些 method 适合直接进行 Jest 单体测试
+- 是否存在为了保持现有行为而没有拆分的处理
