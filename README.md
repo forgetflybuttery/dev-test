@@ -109,3 +109,10 @@ H. 如果发现某个逻辑拆分后可能改变执行顺序或副作用，请�
 
 请先完成 refactoring，再生成对应的 Jest test skeleton。
 请优先做最小范围、低风险的重构。第一阶段先提取 ci-build、ci-integration、ci-test、cd-deploy、validation、output 这几个明显区块，不要一次性重写整个文件。
+错误处理也请按职责进行整理：
+
+- `run()` 最外层的 try/catch 和 `core.setFailed(error.message)` 作为 GitHub Actions 入口层的统一异常处理，保留在 run() 中，不需要单独提取。
+- 当前业务规则导致的错误判断（例如 blue-green / rollback、CloudRun Function、macaron2 等）属于 validation，请从 run() 中提取到 `validateContext()`。
+- 第一阶段重构时不要改变现有 error message、core.setFailed() 的调用条件和执行行为。
+- 文件读取、execSync、JSON.parse 等局部异常处理，如果属于特定处理本身，则保留在对应拆分后的 function 内，不要为了拆分而拆分。
+
